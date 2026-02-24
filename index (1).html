@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Clawbot - 持仓/保证金/VaR/PnL（静态版）</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 24px; color:#111; }
+    .grid { display:grid; grid-template-columns: 380px 1fr; gap:16px; align-items:start; }
+    .card { border:1px solid #e5e7eb; border-radius:14px; padding:14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    h1 { font-size:18px; margin:0 0 10px; }
+    h2 { font-size:14px; margin:0 0 10px; color:#374151; }
+    label { display:block; font-size:12px; color:#374151; margin:10px 0 6px; }
+    input, select, button, textarea { width:100%; box-sizing:border-box; }
+    input, select, textarea { padding:10px; border:1px solid #d1d5db; border-radius:10px; font-size:13px; }
+    button { padding:10px; border:0; border-radius:10px; background:#111827; color:#fff; font-weight:600; cursor:pointer; }
+    button.secondary { background:#f3f4f6; color:#111827; border:1px solid #e5e7eb; }
+    button.danger { background:#b91c1c; }
+    .row { display:flex; gap:10px; }
+    .row > * { flex:1; }
+    .muted { color:#6b7280; font-size:12px; line-height:1.4; }
+    .tabs { display:flex; gap:8px; margin-top:10px; }
+    .tab { padding:8px 10px; border-radius:10px; border:1px solid #e5e7eb; background:#fafafa; cursor:pointer; font-size:12px; }
+    .tab.active { background:#111827; color:#fff; border-color:#111827; }
+    .kpi { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; }
+    .kpi .box { border:1px solid #e5e7eb; border-radius:12px; padding:10px; }
+    .kpi .t { font-size:12px; color:#6b7280; }
+    .kpi .v { font-size:16px; font-weight:700; margin-top:4px; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th, td { border-bottom:1px solid #eee; padding:8px; text-align:left; vertical-align:top; }
+    th { position:sticky; top:0; background:#fff; z-index:1; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid #e5e7eb; background:#fafafa; }
+    .ok { color:#065f46; }
+    .warn { color:#b45309; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .small { font-size:11px; color:#6b7280; }
+    .stack { display:flex; flex-direction:column; gap:10px; }
+    .linkbtn { text-decoration:none; display:inline-block; padding:8px 10px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; font-size:12px; color:#111; text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    <div class="card">
+      <h1>Clawbot · 持仓 / 保证金 / VaR / PnL（静态网页）</h1>
+      <div class="muted">
+        你可以在网页里<strong>直接录入/保存持仓</strong>（localStorage），并显示：<br/>
+        1) 估算保证金使用（按 margin_rate）<br/>
+        2) VaR/CVaR（EWMA 加权历史模拟，需要 prices.csv）<br/>
+        3) 浮动盈亏 PnL（按 entry_price vs current_price）<br/><br/>
+        <span class="warn">提示：</span>这是纯前端静态版；“实时行情自动更新”需要你后续接行情源/券商 API（可做第二阶段）。
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" id="tabPositions">持仓输入</div>
+        <div class="tab" id="tabPrices">价格/模型</div>
+      </div>
+
+      <div id="panelPositions" class="stack" style="margin-top:10px;">
+        <div class="row">
+          <div>
+            <label>基准币种（仅展示）</label>
+            <select id="baseCcy">
+              <option value="CNY">CNY</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+          <div>
+            <label>账户权益（可选，用于算保证金占比）</label>
+            <input id="equity" type="number" placeholder="例如 1500000" />
+          </div>
+        </div>
+
+        <h2>新增持仓（会保存）</h2>
+        <div class="row">
+          <div>
+            <label>risk_factor_id</label>
+            <input id="f_id" placeholder="例如 SGX_IO_2026-04" />
+          </div>
+          <div>
+            <label>合约月</label>
+            <input id="f_month" placeholder="2026-04 或 SPOT" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>方向</label>
+            <select id="f_side">
+              <option value="LONG">LONG</option>
+              <option value="SHORT">SHORT</option>
+            </select>
+          </div>
+          <div>
+            <label>数量 quantity</label>
+            <input id="f_qty" type="number" placeholder="例如 50" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>乘数 multiplier</label>
+            <input id="f_mul" type="number" placeholder="例如 100" />
+          </div>
+          <div>
+            <label>当前价 current_price</label>
+            <input id="f_px" type="number" placeholder="例如 750" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>开仓价 entry_price（用于 PnL）</label>
+            <input id="f_entry" type="number" placeholder="例如 740" />
+          </div>
+          <div>
+            <label>保证金率 margin_rate（例如 0.1=10%）</label>
+            <input id="f_mr" type="number" step="0.01" placeholder="例如 0.1" />
+          </div>
+        </div>
+
+        <div class="row">
+          <button id="addPosBtn">添加到持仓</button>
+          <button id="clearBtn" class="danger">清空持仓</button>
+        </div>
+
+        <div class="row">
+          <a class="linkbtn" id="downloadExposure">下载 exposure.csv（按当前持仓生成）</a>
+          <a class="linkbtn" id="downloadTemplate">下载模板（空 exposure.csv）</a>
+        </div>
+
+        <div class="muted small" id="status">-</div>
+      </div>
+
+      <div id="panelPrices" class="stack" style="margin-top:10px; display:none;">
+        <h2>风险模型参数</h2>
+        <div class="row">
+          <div>
+            <label>置信度</label>
+            <select id="cl">
+              <option value="0.95">95%</option>
+              <option value="0.99">99%</option>
+            </select>
+          </div>
+          <div>
+            <label>窗口长度（交易日）</label>
+            <input id="lookback" type="number" value="250" min="30" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>EWMA λ</label>
+            <input id="lambda" type="number" value="0.94" step="0.01" min="0.80" max="0.99"/>
+          </div>
+          <div>
+            <label>风险周期</label>
+            <select id="horizon">
+              <option value="1">1D</option>
+              <option value="10">10D（PnL滚动叠加）</option>
+            </select>
+          </div>
+        </div>
+
+        <label>上传 prices.csv（date,risk_factor_id,price）</label>
+        <input id="pricesFile" type="file" accept=".csv" />
+
+        <div class="row">
+          <button id="runBtn">计算 VaR / CVaR</button>
+          <button id="demoBtn" class="secondary">载入示例 prices</button>
+        </div>
+
+        <textarea id="log" rows="6" readonly></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>组合总览</h2>
+      <div class="kpi" style="margin-bottom:12px">
+        <div class="box"><div class="t">持仓行</div><div class="v" id="k_lines">-</div></div>
+        <div class="box"><div class="t">净名义（估算）</div><div class="v" id="k_notional">-</div></div>
+        <div class="box"><div class="t">保证金使用</div><div class="v" id="k_margin">-</div><div class="small" id="k_margin_pct"></div></div>
+        <div class="box"><div class="t">浮动盈亏 PnL</div><div class="v" id="k_pnl">-</div></div>
+      </div>
+
+      <h2>VaR/CVaR</h2>
+      <div class="muted small" id="meta">（上传 prices.csv 后计算）</div>
+      <div class="kpi" style="margin:10px 0 12px;">
+        <div class="box"><div class="t">VaR</div><div class="v" id="k_var">-</div></div>
+        <div class="box"><div class="t">CVaR</div><div class="v" id="k_cvar">-</div></div>
+        <div class="box"><div class="t">风险因子数</div><div class="v" id="k_factors">-</div></div>
+        <div class="box"><div class="t">VaR 情景日索引</div><div class="v" id="k_varidx">-</div></div>
+      </div>
+
+      <h2>持仓明细</h2>
+      <div style="max-height:520px; overflow:auto; border:1px solid #eee; border-radius:12px;">
+        <table id="posTable">
+          <thead>
+            <tr>
+              <th>risk_factor_id</th>
+              <th>合约月</th>
+              <th>方向</th>
+              <th>数量</th>
+              <th>乘数</th>
+              <th>现价</th>
+              <th>开仓价</th>
+              <th>名义</th>
+              <th>保证金</th>
+              <th>PnL</th>
+              <th>VaR贡献</th>
+              <th>CVaR贡献</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="muted small" style="margin-top:10px;">
+        说明：保证金 = |qty|×multiplier×current_price×margin_rate（估算）。<br/>
+        PnL = sign×qty×multiplier×(current_price-entry_price)。<br/>
+        VaR/CVaR 贡献采用情景贡献：VaR 对应分位附近的那一天；CVaR 为尾部均值贡献。
+      </div>
+    </div>
+  </div>
+
+<script>
+  function parseCSV(text) {
+    const rows = [];
+    let cur = '', inQuotes = false;
+    const lines = [];
+    for (let i=0; i<text.length; i++) {
+      const ch = text[i];
+      if (ch === '"') {
+        if (inQuotes && text[i+1] === '"') { cur += '"'; i++; }
+        else inQuotes = !inQuotes;
+      } else if (ch === '\n' && !inQuotes) {
+        lines.push(cur); cur = '';
+      } else if (ch === '\r') {
+      } else cur += ch;
+    }
+    if (cur.length) lines.push(cur);
+
+    const splitLine = (line) => {
+      const out = [];
+      let s = '', q = false;
+      for (let i=0; i<line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (q && line[i+1] === '"') { s += '"'; i++; }
+          else q = !q;
+        } else if (ch === ',' && !q) {
+          out.push(s); s = '';
+        } else s += ch;
+      }
+      out.push(s);
+      return out.map(x => x.trim());
+    };
+
+    if (lines.length === 0) return [];
+    const header = splitLine(lines[0]);
+    for (let r=1; r<lines.length; r++) {
+      if (!lines[r].trim()) continue;
+      const cols = splitLine(lines[r]);
+      const obj = {};
+      header.forEach((h, idx) => obj[h] = (cols[idx] ?? '').trim());
+      rows.push(obj);
+    }
+    return rows;
+  }
+
+  function toCSV(rows, header) {
+    const escape = (v) => {
+      const s = String(v ?? '');
+      if (s.includes('"') || s.includes(',') || s.includes('\n')) return '"' + s.replaceAll('"','""') + '"';
+      return s;
+    };
+    const lines = [];
+    lines.push(header.join(','));
+    for (const r of rows) lines.push(header.map(h => escape(r[h])).join(','));
+    return lines.join('\n');
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], {type:"text/plain;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function fmt(n, ccy='') {
+    if (!isFinite(n)) return '-';
+    const sign = n < 0 ? '-' : '';
+    const a = Math.abs(n);
+    const s = a >= 1e8 ? (a/1e8).toFixed(2)+'亿'
+            : a >= 1e4 ? (a/1e4).toFixed(2)+'万'
+            : a.toFixed(2);
+    return sign + s + (ccy ? (' ' + ccy) : '');
+  }
+
+  function weightedQuantile(values, weights, q) {
+    const idx = values.map((v,i)=>i).sort((a,b)=>values[a]-values[b]);
+    let wsum = 0;
+    const pairs = idx.map(i => ({v: values[i], w: weights[i]}));
+    const total = pairs.reduce((s,p)=>s+p.w,0);
+    for (const p of pairs) {
+      wsum += p.w;
+      if (wsum/total >= q) return p.v;
+    }
+    return pairs[pairs.length-1].v;
+  }
+
+  function weightedTailMean(values, weights, threshold) {
+    let num = 0, den = 0;
+    for (let i=0; i<values.length; i++) {
+      if (values[i] <= threshold) { num += values[i]*weights[i]; den += weights[i]; }
+    }
+    return den > 0 ? num/den : threshold;
+  }
+
+  function rollSum(arr, window) {
+    const out = [];
+    let s = 0;
+    for (let i=0; i<arr.length; i++) {
+      s += arr[i];
+      if (i >= window) s -= arr[i-window];
+      if (i >= window-1) out.push(s);
+    }
+    return out;
+  }
+
+  function runRisk(positions, priceRows, params) {
+    const log = [];
+    const pxMap = new Map();
+    for (const r of priceRows) {
+      const id = r.risk_factor_id;
+      const d = r.date;
+      const p = Number(r.price);
+      if (!id || !d || !isFinite(p)) continue;
+      if (!pxMap.has(id)) pxMap.set(id, []);
+      pxMap.get(id).push({d, p});
+    }
+    for (const [k,v] of pxMap.entries()) v.sort((a,b)=>a.d.localeCompare(b.d));
+
+    const pos = [];
+    for (const r of positions) {
+      const id = r.risk_factor_id;
+      const cm = r.contract_month || '';
+      const side = (r.side||'').toUpperCase();
+      const sgn = (side === 'SHORT' || side === 'S') ? -1 : 1;
+      const qty = Number(r.quantity);
+      const mul = Number(r.multiplier);
+      const px = Number(r.current_price);
+      if (!id || !isFinite(qty) || !isFinite(mul) || !isFinite(px)) continue;
+      if (!pxMap.has(id) || pxMap.get(id).length < params.lookback+1) {
+        log.push(`风险因子 ${id} 历史价格不足（至少 ${params.lookback+1} 条）`);
+        continue;
+      }
+      pos.push({id, cm, side: sgn>0?'LONG':'SHORT', sgn, qty, mul, px});
+    }
+    if (pos.length === 0) return { error: (log.join('\n') || '没有可用于 VaR 的有效持仓（检查 prices.csv 是否齐全）') };
+
+    const L = params.lookback + 1;
+    const factorSeries = {};
+    for (const p of pos) factorSeries[p.id] = pxMap.get(p.id).slice(-L).map(x=>x.p);
+
+    const dP = {};
+    for (const p of pos) {
+      const s = factorSeries[p.id];
+      const arr = [];
+      for (let i=1; i<s.length; i++) arr.push(s[i] - s[i-1]);
+      dP[p.id] = arr;
+    }
+
+    const pnl1d = new Array(params.lookback).fill(0);
+    const pnlByPos = pos.map(()=> new Array(params.lookback).fill(0));
+    for (let t=0; t<params.lookback; t++) {
+      let total = 0;
+      for (let i=0; i<pos.length; i++) {
+        const p = pos[i];
+        const c = p.sgn * p.qty * p.mul * dP[p.id][t];
+        pnlByPos[i][t] = c;
+        total += c;
+      }
+      pnl1d[t] = total;
+    }
+
+    let pnl = pnl1d.slice();
+    let pnlPosH = pnlByPos.map(a=>a.slice());
+    if (params.horizon > 1) {
+      pnl = rollSum(pnl1d, params.horizon);
+      pnlPosH = pnlByPos.map(a=>rollSum(a, params.horizon));
+    }
+
+    const n = pnl.length;
+    const lambda = params.lambda;
+    const weights = [];
+    for (let i=0; i<n; i++) {
+      const k = (n-1) - i;
+      weights.push((1-lambda) * Math.pow(lambda, k));
+    }
+
+    const alpha = Number(params.cl);
+    const q = 1 - alpha;
+    const varValue = weightedQuantile(pnl, weights, q);
+    const cvarValue = weightedTailMean(pnl, weights, varValue);
+
+    let varIdx = 0, best = Infinity;
+    for (let i=0; i<n; i++) {
+      const diff = Math.abs(pnl[i] - varValue);
+      if (diff < best) { best = diff; varIdx = i; }
+    }
+    const tailMask = pnl.map(x => x <= varValue);
+
+    const contrib = pos.map((p, i) => {
+      const varContrib = pnlPosH[i][varIdx];
+      let num = 0, den = 0;
+      for (let t=0; t<n; t++) {
+        if (tailMask[t]) { num += pnlPosH[i][t] * weights[t]; den += weights[t]; }
+      }
+      const cvarContrib = den>0 ? num/den : varContrib;
+      return {id:p.id, varContrib, cvarContrib};
+    });
+
+    return { varValue, cvarValue, factors: new Set(pos.map(p=>p.id)).size, varIdx, log: log.join('\n'), contrib };
+  }
+
+  function demoPrices() {
+    const px = [];
+    const start = new Date("2024-01-02");
+    let p1 = 750, p2 = 752, p3 = 80;
+    for (let i=0; i<320; i++) {
+      const d = new Date(start.getTime() + i*86400000);
+      const ds = d.toISOString().slice(0,10);
+      const shock = Math.sin(i/9)*2 + (Math.cos(i/7))*1.5;
+      p1 = p1 + shock*0.3;
+      p2 = p2 + shock*0.28 + Math.sin(i/15)*0.2;
+      p3 = p3 + Math.sin(i/11)*0.15;
+      px.push({date: ds, risk_factor_id:"SGX_IO_2026-04", price: p1.toFixed(2)});
+      px.push({date: ds, risk_factor_id:"SGX_IO_2026-05", price: p2.toFixed(2)});
+      px.push({date: ds, risk_factor_id:"BRENT_2026-06", price: p3.toFixed(2)});
+    }
+    return px;
+  }
+
+  const LS_KEY = "clawbot_positions_v1";
+  function loadPositions() {
+    try { const raw = localStorage.getItem(LS_KEY); return raw ? (JSON.parse(raw) || []) : []; } catch { return []; }
+  }
+  function savePositions(arr) { localStorage.setItem(LS_KEY, JSON.stringify(arr)); }
+
+  const tbody = document.querySelector('#posTable tbody');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+
+  let positions = loadPositions();
+  let priceRows = null;
+  let lastRisk = null;
+
+  function computeMarginPnL(pos, equity) {
+    const out = { notionalNet:0, margin:0, pnl:0, marginPct:null };
+    for (const r of pos) {
+      const side = (r.side||'').toUpperCase();
+      const sgn = (side === 'SHORT' || side === 'S') ? -1 : 1;
+      const qty = Number(r.quantity);
+      const mul = Number(r.multiplier);
+      const px = Number(r.current_price);
+      const entry = Number(r.entry_price);
+      const mr = Number(r.margin_rate);
+      if (isFinite(qty) && isFinite(mul) && isFinite(px)) {
+        out.notionalNet += sgn * qty * mul * px;
+        if (isFinite(mr)) out.margin += Math.abs(qty) * mul * px * mr;
+        if (isFinite(entry)) out.pnl += sgn * qty * mul * (px - entry);
+      }
+    }
+    if (equity && isFinite(equity) && equity>0) out.marginPct = out.margin / equity;
+    return out;
+  }
+
+  function refreshDashboard() {
+    const ccy = document.getElementById('baseCcy').value;
+    const equity = Number(document.getElementById('equity').value);
+
+    document.getElementById('k_lines').textContent = positions.length;
+
+    const mp = computeMarginPnL(positions, equity);
+    document.getElementById('k_notional').textContent = fmt(mp.notionalNet, ccy);
+    document.getElementById('k_margin').textContent = fmt(mp.margin, ccy);
+    document.getElementById('k_pnl').textContent = fmt(mp.pnl, ccy);
+    document.getElementById('k_margin_pct').textContent = mp.marginPct===null ? '' : `占权益 ${(mp.marginPct*100).toFixed(2)}%`;
+
+    if (lastRisk) {
+      document.getElementById('k_var').textContent = fmt(lastRisk.varValue, ccy);
+      document.getElementById('k_cvar').textContent = fmt(lastRisk.cvarValue, ccy);
+      document.getElementById('k_factors').textContent = lastRisk.factors;
+      document.getElementById('k_varidx').textContent = lastRisk.varIdx;
+    } else {
+      document.getElementById('k_var').textContent = '-';
+      document.getElementById('k_cvar').textContent = '-';
+      document.getElementById('k_factors').textContent = '-';
+      document.getElementById('k_varidx').textContent = '-';
+    }
+
+    const contribMap = new Map();
+    if (lastRisk && lastRisk.contrib) for (const c of lastRisk.contrib) contribMap.set(c.id, c);
+
+    tbody.innerHTML = '';
+    for (const r of positions) {
+      const side = (r.side||'').toUpperCase();
+      const sgn = (side === 'SHORT' || side === 'S') ? -1 : 1;
+      const qty = Number(r.quantity);
+      const mul = Number(r.multiplier);
+      const px = Number(r.current_price);
+      const entry = Number(r.entry_price);
+      const mr = Number(r.margin_rate);
+
+      const notional = (isFinite(qty)&&isFinite(mul)&&isFinite(px)) ? (sgn*qty*mul*px) : NaN;
+      const margin = (isFinite(qty)&&isFinite(mul)&&isFinite(px)&&isFinite(mr)) ? (Math.abs(qty)*mul*px*mr) : NaN;
+      const pnl = (isFinite(qty)&&isFinite(mul)&&isFinite(px)&&isFinite(entry)) ? (sgn*qty*mul*(px-entry)) : NaN;
+
+      const c = contribMap.get(r.risk_factor_id);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">${r.risk_factor_id || ''}</td>
+        <td>${r.contract_month || ''}</td>
+        <td><span class="pill">${side || ''}</span></td>
+        <td>${r.quantity ?? ''}</td>
+        <td>${r.multiplier ?? ''}</td>
+        <td>${r.current_price ?? ''}</td>
+        <td>${r.entry_price ?? ''}</td>
+        <td>${fmt(notional, ccy)}</td>
+        <td>${fmt(margin, ccy)}</td>
+        <td>${fmt(pnl, ccy)}</td>
+        <td>${fmt(c ? c.varContrib : NaN, ccy)}</td>
+        <td>${fmt(c ? c.cvarContrib : NaN, ccy)}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    statusEl.innerHTML = `已保存持仓：<span class="ok">${positions.length}</span> 行（刷新页面也不会丢）`;
+  }
+
+  function setTab(which) {
+    const t1 = document.getElementById('tabPositions');
+    const t2 = document.getElementById('tabPrices');
+    const p1 = document.getElementById('panelPositions');
+    const p2 = document.getElementById('panelPrices');
+    if (which === 'positions') {
+      t1.classList.add('active'); t2.classList.remove('active');
+      p1.style.display = ''; p2.style.display = 'none';
+    } else {
+      t2.classList.add('active'); t1.classList.remove('active');
+      p2.style.display = ''; p1.style.display = 'none';
+    }
+  }
+  document.getElementById('tabPositions').onclick = () => setTab('positions');
+  document.getElementById('tabPrices').onclick = () => setTab('prices');
+
+  document.getElementById('addPosBtn').onclick = () => {
+    const rec = {
+      risk_factor_id: document.getElementById('f_id').value.trim(),
+      contract_month: document.getElementById('f_month').value.trim(),
+      side: document.getElementById('f_side').value,
+      quantity: document.getElementById('f_qty').value,
+      multiplier: document.getElementById('f_mul').value,
+      current_price: document.getElementById('f_px').value,
+      entry_price: document.getElementById('f_entry').value,
+      margin_rate: document.getElementById('f_mr').value
+    };
+    if (!rec.risk_factor_id) { alert("请先填 risk_factor_id"); return; }
+    positions.push(rec);
+    savePositions(positions);
+    refreshDashboard();
+  };
+
+  document.getElementById('clearBtn').onclick = () => {
+    if (!confirm("确认清空所有持仓？")) return;
+    positions = [];
+    savePositions(positions);
+    lastRisk = null;
+    refreshDashboard();
+  };
+
+  document.getElementById('equity').addEventListener('input', refreshDashboard);
+  document.getElementById('baseCcy').addEventListener('change', refreshDashboard);
+
+  document.getElementById('downloadExposure').onclick = (e) => {
+    e.preventDefault();
+    const header = ["risk_factor_id","contract_month","side","quantity","multiplier","current_price","entry_price","margin_rate"];
+    downloadText("exposure.csv", toCSV(positions, header));
+  };
+  document.getElementById('downloadTemplate').onclick = (e) => {
+    e.preventDefault();
+    const header = ["risk_factor_id","contract_month","side","quantity","multiplier","current_price","entry_price","margin_rate"];
+    downloadText("exposure.csv", header.join(',') + "\n");
+  };
+
+  async function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = reject;
+      fr.readAsText(file);
+    });
+  }
+  document.getElementById('pricesFile').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const txt = await readFileAsText(f);
+    priceRows = parseCSV(txt);
+    logEl.value = `已载入 prices.csv：${priceRows.length} 行`;
+  });
+
+  document.getElementById('runBtn').onclick = () => {
+    logEl.value = '';
+    if (!priceRows) { logEl.value = "请先上传 prices.csv，或点“载入示例 prices”。"; return; }
+    const params = {
+      cl: Number(document.getElementById('cl').value),
+      lookback: Number(document.getElementById('lookback').value),
+      lambda: Number(document.getElementById('lambda').value),
+      horizon: Number(document.getElementById('horizon').value),
+    };
+    document.getElementById('meta').textContent =
+      `方法：EWMA 加权历史模拟 | λ=${params.lambda} | 窗口=${params.lookback} | 置信度=${Math.round(params.cl*100)}% | 周期=${params.horizon}D`;
+    const res = runRisk(positions, priceRows, params);
+    if (res.error) { logEl.value = res.error; lastRisk = null; refreshDashboard(); return; }
+    lastRisk = res;
+    logEl.value = res.log || "计算完成。";
+    refreshDashboard();
+  };
+
+  document.getElementById('demoBtn').onclick = () => {
+    priceRows = demoPrices();
+    logEl.value = `已载入示例 prices：${priceRows.length} 行（包含 SGX_IO_2026-04/05, BRENT_2026-06）`;
+  };
+
+  refreshDashboard();
+</script>
+</body>
+</html>
